@@ -1,0 +1,1175 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+
+import { createStorefrontClient } from "../client/client";
+import { StorefrontApiError } from "../client/errors";
+import { gql } from "../graphql";
+import {
+  CONSENT_MANAGEMENT_HEADER,
+  HYDROGEN_VERSION_HEADER,
+  REQUEST_GROUP_ID_HEADER,
+  SDK_VARIANT_HEADER,
+  SDK_VARIANT_SOURCE_HEADER,
+  SDK_VERSION_HEADER,
+  SHOPIFY_STOREFRONT_ORIGIN_HEADER,
+  SHOPIFY_STOREFRONT_S_HEADER,
+  SHOPIFY_STOREFRONT_Y_HEADER,
+  SHOPIFY_UNIQUE_TOKEN_HEADER,
+  SHOPIFY_VISIT_TOKEN_HEADER,
+} from "./headers";
+import type { ShopifyI18n } from "./i18n/types";
+import { configureLogging } from "./logging";
+import { createShopifyRequestContext } from "./request-context";
+import { assert, createTestLogger } from "./test-utils";
+
+const DEFAULT_LOCALE = { country: "US", language: "EN" } as const;
+const DEFAULT_I18N = { defaultLocale: DEFAULT_LOCALE } as const satisfies ShopifyI18n;
+const PATHNAME_I18N = {
+  defaultLocale: DEFAULT_LOCALE,
+  routing: {
+    type: "pathname",
+    locales: [
+      { language: "ES", country: "ES" },
+      { language: "FR", country: "CA" },
+    ],
+  },
+} as const satisfies ShopifyI18n;
+
+type StorefrontRequest = Pick<Request, "headers"> &
+  Partial<Pick<Request, "method" | "signal" | "url">>;
+
+function createTestRequestContext(request: StorefrontRequest, i18n: ShopifyI18n = DEFAULT_I18N) {
+  return createShopifyRequestContext({ request, i18n });
+}
+
+describe("createShopifyRequestContext", () => {
+  it("requires i18n", () => {
+    expect(() =>
+      createShopifyRequestContext({
+        request: { headers: new Headers() },
+      } as never),
+    ).toThrow("i18n from defineShopifyI18n (with a defaultLocale) is required");
+  });
+
+  it("stores request metadata and creates a request group ID", () => {
+    const request = new Request("https://example.com/products/snowboard");
+
+    const result = createTestRequestContext(request);
+
+    expect(result.url).toBe("https://example.com/products/snowboard");
+    expect(result.storefrontOrigin).toBe("https://example.com");
+    expect(result.requestGroupId).toBeTruthy();
+  });
+
+  it("keeps a reference to the request signal", () => {
+    const controller = new AbortController();
+    const request = new Request("https://example.com/products/snowboard", {
+      signal: controller.signal,
+    });
+
+    const result = createTestRequestContext(request);
+
+    expect(result.signal).toBe(request.signal);
+    controller.abort();
+    expect(result.signal?.aborted).toBe(true);
+  });
+
+  it("uses the forwarded storefront URL header when input has no URL", () => {
+    const result = createTestRequestContext({
+      headers: new Headers({ "x-storefront-url": "https://example.com/products/snowboard" }),
+    });
+
+    expect(result.url).toBe("https://example.com/products/snowboard");
+    expect(result.storefrontOrigin).toBe("https://example.com");
+    const headers = new Headers();
+    result.applyStorefrontRequestHeaders(headers);
+    expect(headers.get(SHOPIFY_STOREFRONT_ORIGIN_HEADER)).toBe("https://example.com");
+  });
+
+  it("resolves the locale matched from the request URL, mirrored on the deprecated i18n field", () => {
+    const result = createTestRequestContext(
+      new Request("https://shop.example.com/es-es/products/snowboard"),
+      PATHNAME_I18N,
+    );
+
+    expect(result.locale).toEqual({
+      country: "ES",
+      language: "ES",
+      pathPrefix: "/es-es",
+    });
+    expect(result.i18n).toBe(result.locale);
+  });
+
+  it("pins a legacy I18nConfig locale without matching the request URL", () => {
+    const result = createShopifyRequestContext({
+      request: new Request("https://shop.example.com/fr-ca/products/snowboard"),
+      i18n: { language: "ES", country: "ES", pathPrefix: "es-es/", market: "spain" },
+    });
+
+    const expectedLocale = { language: "ES", country: "ES", pathPrefix: "/es-es", market: "spain" };
+    expect(result.locale).toEqual(expectedLocale);
+    expect(result.i18n).toEqual(expectedLocale);
+  });
+
+  it("defaults a legacy I18nConfig path prefix to an empty string", () => {
+    const result = createShopifyRequestContext({
+      request: { headers: new Headers() },
+      i18n: { language: "EN", country: "US" },
+    });
+
+    expect(result.locale).toEqual({ language: "EN", country: "US", pathPrefix: "" });
+  });
+
+  it("treats a legacy locale with an undefined defaultLocale key as legacy", () => {
+    const result = createShopifyRequestContext({
+      request: new Request("https://shop.example.com/fr-ca/products/snowboard"),
+      i18n: { defaultLocale: undefined, language: "EN", country: "US" },
+    } as never);
+
+    expect(result.locale).toEqual({ language: "EN", country: "US", pathPrefix: "" });
+  });
+
+  it("rejects an i18n object that is neither a definition nor a legacy locale", () => {
+    expect(() =>
+      createShopifyRequestContext({
+        request: { headers: new Headers() },
+        i18n: { language: "EN" },
+      } as never),
+    ).toThrow("i18n from defineShopifyI18n (with a defaultLocale) is required");
+  });
+
+  it("uses an explicit locale override instead of matching the URL", () => {
+    const result = createShopifyRequestContext({
+      request: new Request("https://shop.example.com/es-es/products/snowboard"),
+      i18n: PATHNAME_I18N,
+      locale: { language: "FR", country: "CA" },
+    });
+
+    expect(result.locale).toEqual({ country: "CA", language: "FR", pathPrefix: "/fr-ca" });
+  });
+
+  it("rejects a locale override that is not in the definition", () => {
+    expect(() =>
+      createShopifyRequestContext({
+        request: new Request("https://shop.example.com/"),
+        i18n: PATHNAME_I18N,
+        locale: { language: "DE", country: "DE" },
+      }),
+    ).toThrow("Locale DE-DE is not defined in this storefront's i18n");
+  });
+
+  it("stores trusted buyer IP metadata", () => {
+    const buyerIp = "1.2.3.4";
+
+    const result = createShopifyRequestContext({
+      request: new Request("https://example.com"),
+      i18n: DEFAULT_I18N,
+      buyerIp,
+    });
+
+    expect(result.buyerIp).toBe(buyerIp);
+  });
+
+  it("rejects an empty buyer IP", () => {
+    expect(() =>
+      createShopifyRequestContext({
+        request: new Request("https://example.com"),
+        i18n: DEFAULT_I18N,
+        buyerIp: "",
+      }),
+    ).toThrow("buyerIp must be non-empty when provided");
+  });
+
+  it("treats an undefined buyer IP as absent", () => {
+    const result = createShopifyRequestContext({
+      request: new Request("https://example.com"),
+      i18n: DEFAULT_I18N,
+      buyerIp: undefined,
+    });
+
+    expect(result).not.toHaveProperty("buyerIp");
+  });
+
+  it("defaults pathPrefix to an empty string", () => {
+    const result = createTestRequestContext({ headers: new Headers() });
+
+    expect(result.locale).toEqual({ ...DEFAULT_LOCALE, pathPrefix: "" });
+  });
+
+  it("resolves the default locale with an empty pathPrefix for unprefixed URLs", () => {
+    const result = createTestRequestContext(
+      new Request("https://shop.example.com/products/snowboard"),
+      PATHNAME_I18N,
+    );
+
+    expect(result.locale).toEqual({ ...DEFAULT_LOCALE, pathPrefix: "" });
+  });
+
+  it("derives pathPrefix with a leading slash and no trailing slash from the URL", () => {
+    const result = createTestRequestContext(
+      new Request("https://shop.example.com/es-es/"),
+      PATHNAME_I18N,
+    );
+
+    expect(result.locale.pathPrefix).toBe("/es-es");
+  });
+
+  it("matches the locale prefix case-insensitively", () => {
+    const result = createTestRequestContext(
+      new Request("https://shop.example.com/FR-CA/products/snowboard"),
+      PATHNAME_I18N,
+    );
+
+    expect(result.locale.pathPrefix).toBe("/fr-ca");
+  });
+
+  it("falls back to the default locale for an unknown prefix", () => {
+    const result = createTestRequestContext(
+      new Request("https://shop.example.com/de-de/products/snowboard"),
+      PATHNAME_I18N,
+    );
+
+    expect(result.locale).toEqual({ ...DEFAULT_LOCALE, pathPrefix: "" });
+  });
+
+  it.each([
+    "_shopify_y=unique-token; _shopify_s=visit-token",
+    "_shopify_essential=established; _shopify_y=unique-token; _shopify_s=visit-token",
+    "_shopify_analytics=1; _shopify_marketing=1; _shopify_y=unique-token; _shopify_s=visit-token",
+  ])("forwards cookies without deriving tracking headers: %s", (cookie) => {
+    const context = createTestRequestContext(
+      new Request("https://example.com", { headers: { cookie } }),
+    );
+    const headers = new Headers();
+    context.applyStorefrontRequestHeaders(headers);
+
+    expect(headers.get("cookie")).toBe(cookie);
+    expect(headers.get(SHOPIFY_UNIQUE_TOKEN_HEADER)).toBeNull();
+    expect(headers.get(SHOPIFY_VISIT_TOKEN_HEADER)).toBeNull();
+    expect(headers.get(SHOPIFY_STOREFRONT_Y_HEADER)).toBeNull();
+    expect(headers.get(SHOPIFY_STOREFRONT_S_HEADER)).toBeNull();
+  });
+
+  it("uses x-request-id as the default request group id", () => {
+    const result = createTestRequestContext(
+      new Request("https://example.com", {
+        headers: { "x-request-id": "incoming-request-id" },
+      }),
+    );
+
+    expect(result.requestGroupId).toBe("incoming-request-id");
+  });
+
+  it("falls back to request-id for the default request group id", () => {
+    const result = createTestRequestContext(
+      new Request("https://example.com", {
+        headers: { "request-id": "incoming-request-id" },
+      }),
+    );
+
+    expect(result.requestGroupId).toBe("incoming-request-id");
+  });
+
+  it("gets forwarded request headers for handing off through a proxy", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com/products/snowboard", {
+        headers: {
+          accept: "text/html",
+          cookie: "_shopify_y=unique-token; _shopify_s=visit-token",
+          "x-request-id": "incoming-request-id",
+          [SHOPIFY_UNIQUE_TOKEN_HEADER]: "forwarded-unique-token",
+          [SHOPIFY_VISIT_TOKEN_HEADER]: "forwarded-visit-token",
+        },
+      }),
+    );
+
+    const headers = context.getForwardedRequestHeaders();
+
+    expect(headers.get("accept")).toBe("text/html");
+    expect(headers.get("cookie")).toBe("_shopify_y=unique-token; _shopify_s=visit-token");
+    expect(headers.get("x-storefront-url")).toBe("https://example.com/products/snowboard");
+    expect(headers.get(REQUEST_GROUP_ID_HEADER)).toBe("incoming-request-id");
+    expect(headers.get(SHOPIFY_STOREFRONT_ORIGIN_HEADER)).toBe("https://example.com");
+    expect(headers.get(SHOPIFY_UNIQUE_TOKEN_HEADER)).toBe("forwarded-unique-token");
+    expect(headers.get(SHOPIFY_VISIT_TOKEN_HEADER)).toBe("forwarded-visit-token");
+  });
+
+  it("does not mutate the original request headers when getting forwarded request headers", () => {
+    const originalHeaders = new Headers({ accept: "text/html" });
+    const context = createTestRequestContext({
+      headers: originalHeaders,
+      url: "https://example.com",
+    });
+
+    const headers = context.getForwardedRequestHeaders();
+
+    expect(headers.get(REQUEST_GROUP_ID_HEADER)).toBeTruthy();
+    expect(originalHeaders.get(REQUEST_GROUP_ID_HEADER)).toBeNull();
+  });
+
+  it.each([null, "1", "0", ""])("preserves the incoming Sec-GPC value: %s", (secGpc) => {
+    const requestHeaders = new Headers();
+    if (secGpc !== null) requestHeaders.set("sEc-GpC", secGpc);
+    const context = createTestRequestContext({ headers: requestHeaders });
+    const headers = new Headers({ "Sec-GPC": "stale-value" });
+
+    context.applyStorefrontRequestHeaders(headers);
+
+    expect(headers.get("Sec-GPC")).toBe(secGpc);
+    expect(context.getForwardedRequestHeaders().get("Sec-GPC")).toBe(secGpc);
+  });
+
+  it.each([
+    "",
+    "_shopify_essential=declined-session",
+    "_shopify_analytics=1; _shopify_marketing=1",
+  ])("forwards Sec-GPC regardless of consent cookies: %s", (cookie) => {
+    const context = createTestRequestContext({
+      headers: new Headers({ "Sec-GPC": "1", cookie }),
+    });
+    const headers = new Headers();
+
+    context.applyStorefrontRequestHeaders(headers);
+
+    expect(headers.get("Sec-GPC")).toBe("1");
+  });
+
+  it("applies storefront request headers from only storefront context", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com/products/snowboard", {
+        headers: {
+          accept: "text/html",
+          cookie: "_shopify_y=unique-token; _shopify_s=visit-token",
+          "x-random": "not-forwarded",
+          "x-request-id": "incoming-request-id",
+          [SHOPIFY_UNIQUE_TOKEN_HEADER]: "forwarded-unique-token",
+          [SHOPIFY_VISIT_TOKEN_HEADER]: "forwarded-visit-token",
+        },
+      }),
+    );
+
+    const headers = new Headers({
+      [SHOPIFY_STOREFRONT_ORIGIN_HEADER]: "https://untrusted.example",
+      "x-custom": "preserved",
+    });
+    context.applyStorefrontRequestHeaders(headers);
+
+    expect(headers.get("accept")).toBeNull();
+    expect(headers.get("x-random")).toBeNull();
+    expect(headers.get("x-storefront-url")).toBeNull();
+    expect(headers.get("content-type")).toBeNull();
+    expect(headers.get("x-shopify-storefront-access-token")).toBeNull();
+    expect(headers.get("x-custom")).toBe("preserved");
+    expect(headers.get(SDK_VARIANT_HEADER)).toBe("hydrogen");
+    expect(headers.get(SDK_VARIANT_SOURCE_HEADER)).toBe("kit");
+    expect(headers.get(SDK_VERSION_HEADER)).toBe("2026-10");
+    expect(headers.get(HYDROGEN_VERSION_HEADER)).toBeTruthy();
+    expect(headers.get("cookie")).toBe("_shopify_y=unique-token; _shopify_s=visit-token");
+    expect(headers.get(REQUEST_GROUP_ID_HEADER)).toBe("incoming-request-id");
+    expect(headers.get(SHOPIFY_STOREFRONT_ORIGIN_HEADER)).toBe("https://example.com");
+    expect(headers.get(SHOPIFY_UNIQUE_TOKEN_HEADER)).toBeNull();
+    expect(headers.get(SHOPIFY_VISIT_TOKEN_HEADER)).toBeNull();
+  });
+
+  it("does not apply legacy tracking tokens to document server-timing", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com", {
+        headers: {
+          cookie: "_shopify_y=unique-token; _shopify_s=visit-token",
+        },
+      }),
+    );
+    const headers = new Headers({
+      "content-type": "text/html",
+      "server-timing": "existing;dur=1",
+    });
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.get("server-timing")).toBe("existing;dur=1");
+  });
+
+  it("applies the Hydrogen powered-by header", () => {
+    const context = createTestRequestContext(new Request("https://example.com"));
+    const headers = new Headers();
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.get("powered-by")).toBe("Shopify, Hydrogen");
+  });
+
+  it.each(["_shopify_essential", "app_session"])(
+    "preserves the user-provided %s cookie and disables caching",
+    (name) => {
+      const context = createTestRequestContext(new Request("https://example.com/api/data"));
+      const headers = new Headers({
+        "cache-control": "public, max-age=60",
+        "cdn-cache-control": "public, s-maxage=600",
+        "surrogate-control": "max-age=600",
+      });
+      const cookie = `${name}=updated; Path=/; Secure; HttpOnly`;
+      headers.append("set-cookie", cookie);
+
+      context.applyResponseHeaders(headers);
+
+      expect(headers.getSetCookie()).toEqual([cookie]);
+      expect(headers.get("cache-control")).toBe("private, no-store, max-age=0, must-revalidate");
+      expect(headers.has("cdn-cache-control")).toBe(false);
+      expect(headers.has("surrogate-control")).toBe(false);
+    },
+  );
+
+  it("replays captured SFAPI cookies for an established session", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com", {
+        method: "POST",
+        headers: {
+          cookie: "_shopify_essential=established; _shopify_analytics=1; _shopify_marketing=1",
+        },
+      }),
+    );
+    const subrequestHeaders = new Headers();
+    subrequestHeaders.append("set-cookie", "_shopify_y=collected-y; Path=/; Secure");
+    subrequestHeaders.append("set-cookie", "_shopify_s=collected-s; Path=/; Secure");
+    context.captureSubrequestHeaders(subrequestHeaders);
+    const headers = new Headers({
+      "cache-control": "public, max-age=60",
+      "content-type": "application/json",
+    });
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.getSetCookie()).toEqual([
+      "_shopify_y=collected-y; Path=/; Secure",
+      "_shopify_s=collected-s; Path=/; Secure",
+    ]);
+    expect(headers.get("cache-control")).toBe("private, no-store, max-age=0, must-revalidate");
+  });
+
+  it("does not return captured Shopify cookies or disable caching for GET requests", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com/api/data", {
+        headers: { cookie: "_shopify_essential=established" },
+      }),
+    );
+    const subrequestHeaders = new Headers();
+    subrequestHeaders.append("set-cookie", "_shopify_essential=updated; Path=/; Secure; HttpOnly");
+    context.captureSubrequestHeaders(subrequestHeaders);
+    const headers = new Headers({
+      "cache-control": "public, max-age=60",
+      "content-type": "application/json",
+    });
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.getSetCookie()).toEqual([]);
+    expect(headers.get("cache-control")).toBe("public, max-age=60");
+  });
+
+  it("does not apply captured SFAPI cookies without an established essential session", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com/api/data", { method: "POST" }),
+    );
+    const subrequestHeaders = new Headers();
+    subrequestHeaders.append("set-cookie", "_shopify_essential=cold; Path=/; Secure; HttpOnly");
+    subrequestHeaders.append("set-cookie", "_shopify_analytics=cold; Path=/; Secure; HttpOnly");
+    subrequestHeaders.append("set-cookie", "unknown_cookie=not-returned; Path=/; Secure; HttpOnly");
+    context.captureSubrequestHeaders(subrequestHeaders);
+    const headers = new Headers({ "content-type": "application/json" });
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.getSetCookie()).toEqual([]);
+  });
+
+  it("consumes upstream cookies for gated replay", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com/api/data", {
+        method: "POST",
+        headers: { cookie: "_shopify_essential=established" },
+      }),
+    );
+    const subrequestHeaders = new Headers();
+    subrequestHeaders.append("set-cookie", "_shopify_essential=updated; Path=/; Secure; HttpOnly");
+    context.consumeStorefrontResponseHeaders(subrequestHeaders);
+    const headers = new Headers({
+      "cache-control": "public, max-age=60",
+      "content-type": "application/json",
+    });
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.getSetCookie()).toEqual([
+      "_shopify_essential=updated; Path=/; Secure; HttpOnly",
+    ]);
+    expect(subrequestHeaders.getSetCookie()).toEqual([]);
+    expect(headers.get("cache-control")).toBe("private, no-store, max-age=0, must-revalidate");
+  });
+
+  it("forces no-store when returning an unrecognized captured cookie", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com/api/data", {
+        method: "POST",
+        headers: { cookie: "_shopify_essential=established" },
+      }),
+    );
+    const subrequestHeaders = new Headers();
+    subrequestHeaders.append("set-cookie", "unknown_cookie=returned; Path=/; Secure; HttpOnly");
+    subrequestHeaders.append("set-cookie", "unknown_cookie=returned; Path=/; Secure; HttpOnly");
+    context.captureSubrequestHeaders(subrequestHeaders);
+    const headers = new Headers({
+      "cache-control": "public, max-age=60",
+      "content-type": "application/json",
+    });
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.getSetCookie()).toEqual(["unknown_cookie=returned; Path=/; Secure; HttpOnly"]);
+    expect(headers.get("cache-control")).toBe("private, no-store, max-age=0, must-revalidate");
+  });
+
+  it("forces no-store when captured cookies already exist on the response", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com/api/data", {
+        method: "POST",
+        headers: { cookie: "_shopify_essential=established" },
+      }),
+    );
+    const subrequestHeaders = new Headers();
+    subrequestHeaders.append("set-cookie", "unknown_cookie=returned; Path=/; Secure; HttpOnly");
+    context.captureSubrequestHeaders(subrequestHeaders);
+    const headers = new Headers({
+      "cache-control": "public, max-age=60",
+      "content-type": "application/json",
+    });
+    headers.append("set-cookie", "unknown_cookie=returned; Path=/; Secure; HttpOnly");
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.getSetCookie()).toEqual(["unknown_cookie=returned; Path=/; Secure; HttpOnly"]);
+    expect(headers.get("cache-control")).toBe("private, no-store, max-age=0, must-revalidate");
+  });
+
+  it("preserves application timing without replaying upstream timing", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com/api/data", {
+        method: "POST",
+        headers: { cookie: "_shopify_essential=established" },
+      }),
+    );
+    const upstreamHeaders = new Headers({
+      "server-timing": '_y;desc="unique", _s;desc="visit"',
+    });
+    context.consumeStorefrontResponseHeaders(upstreamHeaders);
+    const headers = new Headers({
+      "content-type": "application/json",
+      "cache-control": "public, max-age=60",
+      "server-timing": "app;dur=1",
+    });
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.get("server-timing")).toBe("app;dur=1");
+    expect(headers.get("cache-control")).toBe("public, max-age=60");
+  });
+
+  it.each(["consent", "session"])(
+    "disables shared caching for a %s response without upstream headers",
+    (kind) => {
+      const context = createTestRequestContext(
+        new Request("https://example.com/api/unstable/graphql.json", {
+          method: "POST",
+          headers: kind === "consent" ? { [CONSENT_MANAGEMENT_HEADER]: "1" } : {},
+        }),
+      );
+      if (kind === "session") context.markResponseAsSessionEstablishing("session endpoint");
+      const headers = new Headers({
+        "content-type": "application/json",
+        "cache-control": "public, s-maxage=600",
+        "cdn-cache-control": "public, s-maxage=600",
+        "cloudflare-cdn-cache-control": "public, s-maxage=600",
+        "netlify-cdn-cache-control": "public, s-maxage=600",
+        "surrogate-control": "max-age=600",
+      });
+
+      context.applyResponseHeaders(headers);
+
+      expect(headers.getSetCookie()).toEqual([]);
+      expect(headers.get("cache-control")).toBe("private, no-store, max-age=0, must-revalidate");
+      expect(headers.has("cdn-cache-control")).toBe(false);
+      expect(headers.has("cloudflare-cdn-cache-control")).toBe(false);
+      expect(headers.has("netlify-cdn-cache-control")).toBe(false);
+      expect(headers.has("surrogate-control")).toBe(false);
+    },
+  );
+
+  it("returns Shopify cookies for a marked consent-management request", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com/api/unstable/graphql.json", {
+        method: "POST",
+        headers: { [CONSENT_MANAGEMENT_HEADER]: "1" },
+      }),
+    );
+    const headers = new Headers({ "content-type": "application/json" });
+    headers.append("set-cookie", "_shopify_essential=established; Path=/; Secure; HttpOnly");
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.getSetCookie()).toEqual([
+      "_shopify_essential=established; Path=/; Secure; HttpOnly",
+    ]);
+  });
+
+  it("returns Shopify cookies for a marked session-establishing request", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com/api/ucp/mcp", { method: "POST" }),
+    );
+    context.markResponseAsSessionEstablishing("ucp request");
+    const headers = new Headers({ "content-type": "application/json" });
+    headers.append("set-cookie", "_shopify_essential=established; Path=/; Secure; HttpOnly");
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.getSetCookie()).toEqual([
+      "_shopify_essential=established; Path=/; Secure; HttpOnly",
+    ]);
+  });
+
+  it("never replays captured Shopify cookies on document responses", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com", {
+        headers: {
+          accept: "text/html",
+          cookie: "_shopify_essential=established",
+        },
+      }),
+    );
+    const subrequestHeaders = new Headers();
+    subrequestHeaders.append("set-cookie", "_shopify_essential=updated; Path=/; Secure; HttpOnly");
+    context.captureSubrequestHeaders(subrequestHeaders);
+    const headers = new Headers({ "content-type": "text/html" });
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.getSetCookie()).toEqual([]);
+  });
+
+  it("keeps the first cookie-bearing SFAPI response, ignoring earlier timing-only responses", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com", {
+        method: "POST",
+        headers: { cookie: "_shopify_essential=established" },
+      }),
+    );
+    context.captureSubrequestHeaders(
+      new Headers({ "server-timing": '_y;desc="first-y", _s;desc="first-s"' }),
+    );
+    context.captureSubrequestHeaders(
+      new Headers({ "set-cookie": "_shopify_essential=first; Path=/" }),
+    );
+    context.captureSubrequestHeaders(
+      new Headers({ "set-cookie": "_shopify_essential=second; Path=/" }),
+    );
+    const headers = new Headers();
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.getSetCookie()).toEqual(["_shopify_essential=first; Path=/"]);
+  });
+
+  it("forces no-store cache headers for personalized responses", () => {
+    const context = createTestRequestContext(new Request("https://example.com/account"));
+    const headers = new Headers({
+      "cache-control": "public, s-maxage=600",
+      "cdn-cache-control": "public, s-maxage=600",
+      "cloudflare-cdn-cache-control": "public, s-maxage=600",
+      "netlify-cdn-cache-control": "public, s-maxage=600",
+      "oxygen-cache-control": "public, max-age=3600",
+      "acme-cache-control": "public, max-age=3600",
+      "surrogate-control": "max-age=600",
+    });
+
+    context.markResponseAsPersonalized("customer-account-test");
+    context.applyResponseHeaders(headers);
+
+    expect(headers.get("cache-control")).toBe("private, no-store, max-age=0, must-revalidate");
+    expect(headers.get("cdn-cache-control")).toBeNull();
+    expect(headers.get("cloudflare-cdn-cache-control")).toBeNull();
+    expect(headers.get("netlify-cdn-cache-control")).toBeNull();
+    expect(headers.get("oxygen-cache-control")).toBeNull();
+    // Any vendor `*-Cache-Control` header, not only the ones named above.
+    expect(headers.get("acme-cache-control")).toBeNull();
+    expect(headers.get("surrogate-control")).toBeNull();
+  });
+
+  it("keeps cache headers for non-personalized responses", () => {
+    const context = createTestRequestContext(new Request("https://example.com/products"));
+    const headers = new Headers({
+      "cache-control": "public, s-maxage=600",
+      "oxygen-cache-control": "public, max-age=3600",
+    });
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.get("cache-control")).toBe("public, s-maxage=600");
+    expect(headers.get("oxygen-cache-control")).toBe("public, max-age=3600");
+  });
+
+  it("preserves captured cookies when applying personalized cache safety", () => {
+    const context = createTestRequestContext(
+      new Request("https://example.com/account", {
+        method: "POST",
+        headers: { cookie: "_shopify_essential=established" },
+      }),
+    );
+    const subrequestHeaders = new Headers();
+    subrequestHeaders.append("set-cookie", "session=1; Path=/; Secure");
+    context.captureSubrequestHeaders(subrequestHeaders);
+    context.markResponseAsPersonalized("customer-account-test");
+    const headers = new Headers({
+      "cache-control": "public, s-maxage=600",
+    });
+
+    context.applyResponseHeaders(headers);
+
+    expect(headers.get("cache-control")).toBe("private, no-store, max-age=0, must-revalidate");
+    expect(headers.getSetCookie()).toEqual(["session=1; Path=/; Secure"]);
+  });
+});
+
+describe("applyResponseHeaders after a Storefront API rate limit", () => {
+  const now = Date.parse("Thu, 29 Oct 2026 18:00:00 GMT");
+
+  beforeEach(() => {
+    vi.spyOn(Date, "now").mockReturnValue(now);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function rateLimitedContext(...retryAfterValues: (string | undefined)[]) {
+    const context = createTestRequestContext(new Request("https://example.com/products"));
+    assert(context.captureStorefrontRateLimit, "the context must capture Storefront rate limits");
+    for (const retryAfter of retryAfterValues) context.captureStorefrontRateLimit(retryAfter);
+    return context;
+  }
+
+  it("adds no-store and the Retry-After value to a 429 response", () => {
+    const context = rateLimitedContext("30");
+    const headers = new Headers({ "content-type": "text/html" });
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("cache-control")).toBe("no-store");
+    expect(headers.get("retry-after")).toBe("30");
+  });
+
+  it("removes targeted cache headers from the 429 response", () => {
+    const context = rateLimitedContext("30");
+    const headers = new Headers({
+      "cache-control": "public, max-age=300",
+      "cdn-cache-control": "public, s-maxage=600",
+      "oxygen-cache-control": "public, max-age=3600",
+      "surrogate-control": "max-age=600",
+    });
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("cache-control")).toBe("no-store");
+    expect(headers.get("cdn-cache-control")).toBeNull();
+    expect(headers.get("oxygen-cache-control")).toBeNull();
+    expect(headers.get("surrogate-control")).toBeNull();
+  });
+
+  it("keeps a response Retry-After value that is later than the captured deadline", () => {
+    const context = rateLimitedContext("30");
+    const headers = new Headers({ "retry-after": "120" });
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("retry-after")).toBe("120");
+  });
+
+  it.each([
+    ["1", "60"],
+    ["60", "1"],
+  ])("restores the latest deadline for delays %s then %s", (first, second) => {
+    const context = rateLimitedContext(first, second);
+    const headers = new Headers();
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("retry-after")).toBe("60");
+  });
+
+  it.each([
+    ["60", "Thu, 29 Oct 2026 18:02:00 GMT", "120"],
+    ["Thu, 29 Oct 2026 18:02:00 GMT", "60", "120"],
+    ["180", "Thu, 29 Oct 2026 18:02:00 GMT", "180"],
+    ["Thu, 29 Oct 2026 18:02:00 GMT", "180", "180"],
+  ])("compares delay and date deadlines: %s then %s", (first, second, expected) => {
+    const context = rateLimitedContext(first, second);
+    const headers = new Headers();
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("retry-after")).toBe(expected);
+  });
+
+  it.each([
+    ["00030", "30"],
+    ["Thu, 29 Oct 2026 18:02:00 GMT", "120"],
+    ["Thu, 29 Oct 2026 17:59:59 GMT", "0"],
+    ["0", "0"],
+  ])("normalizes a valid Retry-After value to remaining seconds: %s", (retryAfter, expected) => {
+    const context = rateLimitedContext(retryAfter);
+    const headers = new Headers();
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("retry-after")).toBe(expected);
+  });
+
+  it.each([
+    ["00030", "30"],
+    ["30", "00030"],
+  ])("selects the same representation for equal deadlines: %s then %s", (first, second) => {
+    const context = rateLimitedContext(first, second);
+    const headers = new Headers();
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("retry-after")).toBe("30");
+  });
+
+  it.each([undefined, "soon", "-1", "1.5", "30\r\nSet-Cookie: injected=1"])(
+    "ignores invalid advice before and after a valid delay: %j",
+    (invalid) => {
+      const context = rateLimitedContext(invalid, "60", invalid, "1");
+      const headers = new Headers();
+
+      context.applyResponseHeaders(headers, 429);
+
+      expect(headers.get("retry-after")).toBe("60");
+    },
+  );
+
+  it("compares large valid delays without rounding or overflow", () => {
+    const context = rateLimitedContext("9".repeat(400), "1" + "0".repeat(400));
+    const headers = new Headers();
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("retry-after")).toBe("1" + "0".repeat(400));
+  });
+
+  it.each([
+    [1500, "59"],
+    [61000, "0"],
+  ])("subtracts elapsed time and rounds up after %s ms", (elapsed, expected) => {
+    const context = rateLimitedContext("60");
+    vi.mocked(Date.now).mockReturnValue(now + elapsed);
+    const headers = new Headers();
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("retry-after")).toBe(expected);
+  });
+
+  it("compares delays from their capture times, not their numeric values", () => {
+    const context = rateLimitedContext("60");
+    vi.mocked(Date.now).mockReturnValue(now + 59000);
+    assert(context.captureStorefrontRateLimit, "the context must capture Storefront rate limits");
+    context.captureStorefrontRateLimit("2");
+    const headers = new Headers();
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("retry-after")).toBe("2");
+  });
+
+  it.each([
+    ["1", "60"],
+    ["Thu, 29 Oct 2026 18:00:01 GMT", "60"],
+    ["Thu, 29 Oct 2026 18:02:00 GMT", "120"],
+    ["180", "180"],
+  ])(
+    "emits the later of the response header %s and the captured deadline of 60 seconds",
+    (existing, expected) => {
+      const context = rateLimitedContext("60");
+      const headers = new Headers({ "retry-after": existing });
+
+      context.applyResponseHeaders(headers, 429);
+
+      expect(headers.get("retry-after")).toBe(expected);
+    },
+  );
+
+  it("keeps a valid response header when no captured deadline exists", () => {
+    const context = rateLimitedContext(undefined);
+    const headers = new Headers({ "retry-after": "5" });
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("retry-after")).toBe("5");
+  });
+
+  it("replaces an invalid response header with valid captured advice", () => {
+    const context = rateLimitedContext("60");
+    const headers = new Headers({ "retry-after": "soon" });
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("retry-after")).toBe("60");
+  });
+
+  it("restores critical advice after an optional query recovered from a shorter rate limit", async () => {
+    const context = createTestRequestContext(new Request("https://example.com/products"));
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response("optional query", { status: 429, headers: { "retry-after": "1" } }),
+      )
+      .mockResolvedValueOnce(
+        new Response("critical query", { status: 429, headers: { "retry-after": "60" } }),
+      );
+    const client = createStorefrontClient({
+      type: "public",
+      requestContext: context,
+      config: { storeDomain: "test.myshopify.com", publicStorefrontToken: "token", fetch },
+    });
+    const query = gql(`query { shop { name } }`);
+
+    await expect(client.graphql(query).catch(() => null)).resolves.toBeNull();
+    await expect(client.graphql(query)).rejects.toBeInstanceOf(StorefrontApiError);
+    // React Router builds new headers after it drops the thrown response headers.
+    const headers = new Headers();
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("cache-control")).toBe("no-store");
+    expect(headers.get("retry-after")).toBe("60");
+  });
+
+  it.each([true, false])(
+    "restores the maximum after parallel completion (short first: %s)",
+    async (shortFirst) => {
+      const context = createTestRequestContext(new Request("https://example.com/products"));
+      const short = Promise.withResolvers<Response>();
+      const long = Promise.withResolvers<Response>();
+      const fetch = vi.fn().mockReturnValueOnce(short.promise).mockReturnValueOnce(long.promise);
+      const client = createStorefrontClient({
+        type: "public",
+        requestContext: context,
+        config: { storeDomain: "test.myshopify.com", publicStorefrontToken: "token", fetch },
+      });
+      const query = gql(`query { shop { name } }`);
+      const shortQuery = client.graphql(query).catch((error: unknown) => error);
+      const longQuery = client.graphql(query).catch((error: unknown) => error);
+      const completions = [
+        [short, "1", shortQuery],
+        [long, "60", longQuery],
+      ] as const;
+
+      for (const [pending, retryAfter, queryResult] of shortFirst
+        ? completions
+        : [...completions].reverse()) {
+        pending.resolve(
+          new Response("rate limited", { status: 429, headers: { "retry-after": retryAfter } }),
+        );
+        expect(await queryResult).toBeInstanceOf(StorefrontApiError);
+      }
+      const headers = new Headers();
+      context.applyResponseHeaders(headers, 429);
+
+      expect(headers.get("retry-after")).toBe("60");
+    },
+  );
+
+  it.each([undefined, "-1", "1.5", "tomorrow", "30\r\nSet-Cookie: injected=1"])(
+    "sets no-store but omits a missing or invalid Retry-After value: %j",
+    (retryAfter) => {
+      const context = rateLimitedContext(retryAfter);
+      const headers = new Headers();
+
+      context.applyResponseHeaders(headers, 429);
+
+      expect(headers.get("cache-control")).toBe("no-store");
+      expect(headers.get("retry-after")).toBeNull();
+    },
+  );
+
+  it.each([undefined, 200, 302, 500, 503])("keeps the cache headers for status %s", (status) => {
+    const context = rateLimitedContext("30");
+    const headers = new Headers({ "cache-control": "public, max-age=300" });
+
+    context.applyResponseHeaders(headers, status);
+
+    expect(headers.get("cache-control")).toBe("public, max-age=300");
+    expect(headers.get("retry-after")).toBeNull();
+  });
+
+  it("warns once when the status is missing after a rate limit", () => {
+    const logger = createTestLogger();
+    configureLogging({ logger });
+    const context = rateLimitedContext("30");
+
+    context.applyResponseHeaders(new Headers());
+    context.applyResponseHeaders(new Headers());
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("pass response.status to applyResponseHeaders"),
+      expect.objectContaining({ scope: "rate-limit" }),
+    );
+    configureLogging({});
+  });
+
+  it("does not warn when the status is present or no rate limit happened", () => {
+    const logger = createTestLogger();
+    configureLogging({ logger });
+
+    rateLimitedContext("30").applyResponseHeaders(new Headers(), 200);
+    createTestRequestContext(new Request("https://example.com/products")).applyResponseHeaders(
+      new Headers(),
+    );
+
+    expect(logger.warn).not.toHaveBeenCalled();
+    configureLogging({});
+  });
+
+  it("keeps the cache headers of a 429 when no Storefront API request was rate limited", () => {
+    const context = createTestRequestContext(new Request("https://example.com/products"));
+    const headers = new Headers({ "cache-control": "public, max-age=300" });
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("cache-control")).toBe("public, max-age=300");
+    expect(headers.get("retry-after")).toBeNull();
+  });
+
+  it("keeps the private cache policy for a personalized 429 response", () => {
+    const context = rateLimitedContext("30");
+    context.markResponseAsPersonalized("customer-account-test");
+    const headers = new Headers();
+
+    context.applyResponseHeaders(headers, 429);
+
+    expect(headers.get("cache-control")).toBe("private, no-store, max-age=0, must-revalidate");
+    expect(headers.get("retry-after")).toBe("30");
+  });
+});
+
+describe("UCP discovery link header", () => {
+  const UCP_PROFILE_LINK = '</.well-known/ucp>; rel="ucp"';
+
+  function applyResponseHeaders(request: StorefrontRequest, responseHeaders: HeadersInit = {}) {
+    const headers = new Headers(responseHeaders);
+    createTestRequestContext(request).applyResponseHeaders(headers);
+    return headers;
+  }
+
+  it("links responses to the UCP profile without a version", () => {
+    const headers = applyResponseHeaders(
+      new Request("https://shop.example.com/products/hat", { headers: { accept: "*/*" } }),
+      { "content-type": "text/html; charset=utf-8" },
+    );
+
+    expect(headers.get("link")).toBe(UCP_PROFILE_LINK);
+  });
+
+  it.each([
+    ["a JSON route requested with Accept: text/html", "GET", "text/html", "application/json"],
+    ["a JSON response", "GET", "application/json", "application/json"],
+    ["a HEAD request", "HEAD", "*/*", "text/html"],
+    ["a POST request", "POST", "*/*", "application/json"],
+    ["a response with no content type yet", "GET", "*/*", undefined],
+  ])("links %s", (_, method, accept, contentType) => {
+    const headers = applyResponseHeaders(
+      new Request("https://shop.example.com/page", { method, headers: { accept } }),
+      contentType ? { "content-type": contentType } : {},
+    );
+
+    expect(headers.get("link")).toBe(UCP_PROFILE_LINK);
+  });
+
+  it("appends to an existing Link header", () => {
+    const preload = "</fonts/brand.woff2>; rel=preload; as=font; crossorigin";
+    const headers = applyResponseHeaders(new Request("https://shop.example.com"), {
+      link: preload,
+    });
+
+    expect(headers.get("link")).toBe(`${preload}, ${UCP_PROFILE_LINK}`);
+  });
+
+  it.each([
+    '</.well-known/ucp>; rel="ucp"; version="2026-01-11"',
+    "</.well-known/ucp>; REL=UCP",
+    '</fonts/brand.woff2>; rel=preload, <https://profiles.example.com/ucp>; rel="ucp"',
+    '</.well-known/ucp>; rel="alternate ucp"',
+    '</.well-known/ucp>; rel="ucp alternate"',
+    '</.well-known/ucp>; rel = "ucp"',
+    "</.well-known/ucp>; rel=ucp, </fonts/brand.woff2>; rel=preload; as=font",
+    '</a,b>; rel=preload, </.well-known/ucp>; title="a, b; c"; rel="Alternate UCP"',
+  ])("keeps an existing UCP link: %s", (existing) => {
+    const headers = applyResponseHeaders(new Request("https://shop.example.com"), {
+      link: existing,
+    });
+
+    expect(headers.get("link")).toBe(existing);
+  });
+
+  it("adds the link once when response headers are applied repeatedly", () => {
+    const context = createTestRequestContext(new Request("https://shop.example.com"));
+    const headers = new Headers();
+
+    context.applyResponseHeaders(headers);
+    context.applyResponseHeaders(headers);
+
+    expect(headers.get("link")).toBe(UCP_PROFILE_LINK);
+  });
+
+  it.each([
+    '</ucp-docs>; rel="ucp-docs"',
+    '</x>; title="; rel=ucp"',
+    '</x>; title="rel=\\"ucp\\""; rel=preload',
+    "</x;rel=ucp>; rel=preload",
+  ])("does not treat a link without a UCP relation as a UCP link: %s", (existing) => {
+    const headers = applyResponseHeaders(new Request("https://shop.example.com"), {
+      link: existing,
+    });
+
+    expect(headers.get("link")).toBe(`${existing}, ${UCP_PROFILE_LINK}`);
+  });
+
+  it.each(["https://myshopify.dev", "https://01abc-hydrogen.o2.myshopify.dev/products/hat"])(
+    "does not link responses served from Oxygen deployment host %s",
+    (url) => {
+      const headers = applyResponseHeaders(new Request(url), { "content-type": "text/html" });
+
+      expect(headers.has("link")).toBe(false);
+    },
+  );
+
+  it("does not link responses on an Oxygen deployment host from the forwarded storefront URL", () => {
+    const headers = applyResponseHeaders({
+      headers: new Headers({ "x-storefront-url": "https://preview.myshopify.dev/" }),
+    });
+
+    expect(headers.has("link")).toBe(false);
+  });
+
+  it.each(["https://myshopify.dev.example.com", "https://notmyshopify.dev"])(
+    "links responses served from %s",
+    (url) => {
+      const headers = applyResponseHeaders(new Request(url));
+
+      expect(headers.get("link")).toBe(UCP_PROFILE_LINK);
+    },
+  );
+
+  it("links responses when the storefront URL is unknown", () => {
+    const headers = applyResponseHeaders({ headers: new Headers() });
+
+    expect(headers.get("link")).toBe(UCP_PROFILE_LINK);
+  });
+});
