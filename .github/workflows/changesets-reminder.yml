@@ -12,7 +12,7 @@ jobs:
     if: ${{ !github.event.pull_request.draft }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: mskelton/changelog-reminder-action@7039cd14fb784c0a2b37f6e7a6ade2c9148c2245 # v2.0.0
+      - uses: mskelton/changelog-reminder-action@41fc0852a6e00fc4506a5d7b8a4178062743133a # v3.0.0
         with:
           changelogRegex: "\\.changeset"
           message: |
