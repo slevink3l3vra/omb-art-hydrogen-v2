@@ -37,12 +37,13 @@ jobs:
             ${{ runner.os }}-pnpm-store-
 
       - name: Install dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Discard workspace modifications
         run: git checkout .
 
       - name: Build and Publish to Oxygen
-        run: pnpm --filter @shopify/hydrogen-template-react-router exec shopify hydrogen deploy --force
+        working-directory: templates/react-router
+        run: npx shopify hydrogen deploy --force
         env:
           SHOPIFY_HYDROGEN_DEPLOYMENT_TOKEN: ${{ secrets.OXYGEN_DEPLOYMENT_TOKEN_1000185822 }}
