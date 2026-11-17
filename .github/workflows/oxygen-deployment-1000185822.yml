@@ -1,17 +1,4 @@
-name: Storefront 1000185822
-
-on: [push]
-
-permissions:
-  contents: read
-  deployments: write
-
-jobs:
-  deploy:
-    name: Deploy to Oxygen
-    timeout-minutes: 30
-    runs-on: ubuntu-latest
-    steps:
+steps:
       - uses: actions/checkout@v4
 
       - name: Setup node.js
@@ -44,6 +31,6 @@ jobs:
 
       - name: Build and Publish to Oxygen
         working-directory: templates/react-router
-        run: npx shopify hydrogen deploy --force
+        run: pnpm run deploy -- --force
         env:
           SHOPIFY_HYDROGEN_DEPLOYMENT_TOKEN: ${{ secrets.OXYGEN_DEPLOYMENT_TOKEN_1000185822 }}
