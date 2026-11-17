@@ -1,7 +1,9 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
-import { AuthProvider } from "@/lib/auth/provider";
+
 import { PreviewHostBridge } from "@/components/preview-host-bridge";
 import { CartDrawer, SiteFooter, SiteHeader } from "@/components/site-chrome";
+import { AuthProvider } from "@/lib/auth/provider";
+
 import appCss from "../styles.css?url";
 
 export const Route = createRootRoute({
@@ -37,7 +39,7 @@ export const Route = createRootRoute({
       <body>
         <PreviewHostBridge />
         <AuthProvider>
-          <div className="min-h-screen bg-bg text-fg">
+          <div className="bg-bg text-fg min-h-screen">
             <SiteHeader />
             <Outlet />
             <SiteFooter />

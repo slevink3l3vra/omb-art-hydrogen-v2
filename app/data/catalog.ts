@@ -145,12 +145,7 @@ export const works: Work[] = [
   },
 ];
 
-export const sizeGroups: Array<"All" | SizeGroup> = [
-  "All",
-  "180×120",
-  "150×100",
-  "100×100",
-];
+export const sizeGroups: Array<"All" | SizeGroup> = ["All", "180×120", "150×100", "100×100"];
 
 export function getWork(slug: string) {
   return works.find((work) => work.slug === slug);

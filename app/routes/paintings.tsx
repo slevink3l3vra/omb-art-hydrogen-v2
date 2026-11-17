@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
+
 import { WorkCard } from "@/components/work-card";
 import { sizeGroups, works, type SizeGroup } from "@/data/catalog";
 import { cn } from "@/lib/cn";
@@ -12,9 +13,9 @@ function Paintings() {
 
   return (
     <main className="mx-auto max-w-6xl px-5 py-12 md:px-8 md:py-16">
-      <p className="text-xs tracking-[0.28em] text-gold uppercase">Collection</p>
-      <h1 className="mt-3 font-display text-5xl md:text-6xl">Paintings</h1>
-      <p className="mt-4 max-w-xl text-muted">
+      <p className="text-gold text-xs tracking-[0.28em] uppercase">Collection</p>
+      <h1 className="font-display mt-3 text-5xl md:text-6xl">Paintings</h1>
+      <p className="text-muted mt-4 max-w-xl">
         One-of-a-kind acrylic works. Sizes are the canvas, not the frame. Prices are in forint and
         confirmed before a work leaves the studio.
       </p>

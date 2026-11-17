@@ -9,9 +9,9 @@ function Contact() {
   return (
     <main className="mx-auto grid max-w-6xl gap-12 px-5 py-12 md:grid-cols-2 md:px-8 md:py-16">
       <div>
-        <p className="text-xs tracking-[0.28em] text-gold uppercase">Studio</p>
-        <h1 className="mt-3 font-display text-5xl md:text-6xl">Contact</h1>
-        <p className="mt-4 max-w-md text-muted">
+        <p className="text-gold text-xs tracking-[0.28em] uppercase">Studio</p>
+        <h1 className="font-display mt-3 text-5xl md:text-6xl">Contact</h1>
+        <p className="text-muted mt-4 max-w-md">
           For a private viewing, a commission, or a work you have already chosen. Write in English
           or Hungarian.
         </p>
@@ -40,9 +40,9 @@ function Contact() {
       </div>
 
       {sent ? (
-        <div className="border border-line bg-surface p-8">
+        <div className="border-line bg-surface border p-8">
           <h2 className="font-display text-4xl">The note is ready.</h2>
-          <p className="mt-3 text-sm text-muted">
+          <p className="text-muted mt-3 text-sm">
             Your mail app should have opened with the message. If it did not, write directly to
             info@omb-art.com.
           </p>
@@ -64,43 +64,40 @@ function Contact() {
             setSent(true);
           }}
         >
-          <label className="block text-sm text-muted">
+          <label className="text-muted block text-sm">
             Name
             <input
               name="name"
               required
-              className="mt-2 w-full border border-line bg-bg px-3 py-3 text-fg outline-none focus:border-gold"
+              className="border-line bg-bg text-fg focus:border-gold mt-2 w-full border px-3 py-3 outline-none"
             />
           </label>
-          <label className="block text-sm text-muted">
+          <label className="text-muted block text-sm">
             Email
             <input
               name="email"
               type="email"
               required
-              className="mt-2 w-full border border-line bg-bg px-3 py-3 text-fg outline-none focus:border-gold"
+              className="border-line bg-bg text-fg focus:border-gold mt-2 w-full border px-3 py-3 outline-none"
             />
           </label>
-          <label className="block text-sm text-muted">
+          <label className="text-muted block text-sm">
             Phone
             <input
               name="phone"
-              className="mt-2 w-full border border-line bg-bg px-3 py-3 text-fg outline-none focus:border-gold"
+              className="border-line bg-bg text-fg focus:border-gold mt-2 w-full border px-3 py-3 outline-none"
             />
           </label>
-          <label className="block text-sm text-muted">
+          <label className="text-muted block text-sm">
             Comment
             <textarea
               name="comment"
               rows={5}
               required
-              className="mt-2 w-full border border-line bg-bg px-3 py-3 text-fg outline-none focus:border-gold"
+              className="border-line bg-bg text-fg focus:border-gold mt-2 w-full border px-3 py-3 outline-none"
             />
           </label>
-          <button
-            type="submit"
-            className="min-h-12 bg-gold px-8 text-sm tracking-wide text-bg"
-          >
+          <button type="submit" className="bg-gold text-bg min-h-12 px-8 text-sm tracking-wide">
             Send
           </button>
         </form>

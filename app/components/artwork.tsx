@@ -59,8 +59,20 @@ function Layers({
         <ellipse cx="400" cy="620" rx="260" ry="380" fill={a} opacity="0.85" />
         <ellipse cx="300" cy="480" rx="160" ry="220" fill={b} opacity="0.75" />
         <ellipse cx="500" cy="700" rx="180" ry="240" fill={c} opacity="0.7" />
-        <path d="M120 200 C260 420 220 700 160 980" stroke={b} strokeWidth="46" fill="none" opacity="0.8" />
-        <path d="M640 80 C520 360 700 640 560 1040" stroke={a} strokeWidth="70" fill="none" opacity="0.55" />
+        <path
+          d="M120 200 C260 420 220 700 160 980"
+          stroke={b}
+          strokeWidth="46"
+          fill="none"
+          opacity="0.8"
+        />
+        <path
+          d="M640 80 C520 360 700 640 560 1040"
+          stroke={a}
+          strokeWidth="70"
+          fill="none"
+          opacity="0.55"
+        />
       </g>
     );
   }
@@ -69,7 +81,12 @@ function Layers({
       <g>
         <rect width="800" height="1100" fill={`url(#${uid}-wash)`} opacity="0.9" />
         <ellipse cx="420" cy="360" rx="300" ry="180" fill="#f7f4ee" opacity="0.55" />
-        <path d="M80 700 C240 620 300 860 520 780 C680 720 700 900 760 860" stroke={c} strokeWidth="18" fill="none" />
+        <path
+          d="M80 700 C240 620 300 860 520 780 C680 720 700 900 760 860"
+          stroke={c}
+          strokeWidth="18"
+          fill="none"
+        />
         <path d="M140 240 L220 860" stroke={b} strokeWidth="8" opacity="0.7" />
         <circle cx="560" cy="640" r="18" fill={c} />
       </g>
@@ -82,7 +99,13 @@ function Layers({
         <circle cx="470" cy="520" r="210" fill={b} opacity="0.9" />
         <circle cx="360" cy="700" r="160" fill={c} opacity="0.85" />
         <circle cx="520" cy="300" r="90" fill="#fff6e8" opacity="0.55" />
-        <path d="M100 900 C300 760 480 980 720 820" stroke="#5a2418" strokeWidth="14" fill="none" opacity="0.45" />
+        <path
+          d="M100 900 C300 760 480 980 720 820"
+          stroke="#5a2418"
+          strokeWidth="14"
+          fill="none"
+          opacity="0.45"
+        />
       </g>
     );
   }
@@ -123,8 +146,17 @@ function Layers({
     return (
       <g>
         <rect width="800" height="1100" fill={`url(#${uid}-wash)`} />
-        <path d="M0 640 C160 560 240 760 400 680 C560 600 640 820 800 720 L800 1100 L0 1100 Z" fill={a} opacity="0.55" />
-        <path d="M0 420 C200 480 280 300 480 380 C640 440 700 300 800 340" stroke={c} strokeWidth="22" fill="none" />
+        <path
+          d="M0 640 C160 560 240 760 400 680 C560 600 640 820 800 720 L800 1100 L0 1100 Z"
+          fill={a}
+          opacity="0.55"
+        />
+        <path
+          d="M0 420 C200 480 280 300 480 380 C640 440 700 300 800 340"
+          stroke={c}
+          strokeWidth="22"
+          fill="none"
+        />
         <ellipse cx="400" cy="300" rx="220" ry="60" fill="#f4fffb" opacity="0.25" />
       </g>
     );
