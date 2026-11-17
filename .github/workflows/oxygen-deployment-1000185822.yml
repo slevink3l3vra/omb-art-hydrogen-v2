@@ -43,6 +43,6 @@ jobs:
         run: git checkout .
 
       - name: Build and Publish to Oxygen
-        run: pnpm run deploy -- --force
+        run: pnpm --filter @shopify/hydrogen-template-react-router exec shopify hydrogen deploy --force
         env:
           SHOPIFY_HYDROGEN_DEPLOYMENT_TOKEN: ${{ secrets.OXYGEN_DEPLOYMENT_TOKEN_1000185822 }}
