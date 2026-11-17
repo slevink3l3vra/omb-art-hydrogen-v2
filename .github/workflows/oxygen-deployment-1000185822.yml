@@ -1,36 +1,36 @@
 steps:
-      - uses: actions/checkout@v4
+  - uses: actions/checkout@v4
 
-      - name: Setup node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "lts/*"
-          check-latest: true
+  - name: Setup node.js
+    uses: actions/setup-node@v4
+    with:
+      node-version: "lts/*"
+      check-latest: true
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
+  - name: Install pnpm
+    uses: pnpm/action-setup@v4
 
-      - name: Get pnpm store directory
-        id: pnpm-cache
-        run: |
-          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
+  - name: Get pnpm store directory
+    id: pnpm-cache
+    run: |
+      echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_OUTPUT
 
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
+  - name: Setup pnpm cache
+    uses: actions/cache@v4
+    with:
+      path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
+      key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+      restore-keys: |
+        ${{ runner.os }}-pnpm-store-
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+  - name: Install dependencies
+    run: pnpm install --frozen-lockfile
 
-      - name: Discard workspace modifications
-        run: git checkout .
+  - name: Discard workspace modifications
+    run: git checkout .
 
-      - name: Build and Publish to Oxygen
-        working-directory: templates/react-router
-        run: pnpm run deploy -- --force
-        env:
-          SHOPIFY_HYDROGEN_DEPLOYMENT_TOKEN: ${{ secrets.OXYGEN_DEPLOYMENT_TOKEN_1000185822 }}
+  - name: Build and Publish to Oxygen
+    working-directory: templates/react-router
+    run: pnpm run deploy -- --force
+    env:
+      SHOPIFY_HYDROGEN_DEPLOYMENT_TOKEN: ${{ secrets.OXYGEN_DEPLOYMENT_TOKEN_1000185822 }}
