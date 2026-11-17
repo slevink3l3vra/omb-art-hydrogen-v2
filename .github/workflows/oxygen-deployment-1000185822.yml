@@ -48,6 +48,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      - name: Discard workspace modifications
+        run: git checkout .
+
       - name: Build and Publish to Oxygen
         run: npx shopify hydrogen deploy -- --force
         env:
