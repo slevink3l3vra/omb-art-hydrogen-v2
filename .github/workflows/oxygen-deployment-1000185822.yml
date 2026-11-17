@@ -32,7 +32,6 @@ jobs:
             ${{ runner.os }}-build-
             ${{ runner.os }}-
 
-    steps:
       - uses: actions/checkout@v4
 
       - name: Setup node.js
